@@ -42,58 +42,266 @@ def get_visible_questions(driver):
     except:
         return []
 
-def fill_question(driver, question_element, q_index):
-    """Xử lý điền 1 câu hỏi bất kỳ (Radio hoặc Checkbox)"""
+def get_option_elements(question_element):
+    """Trả về list các element option (radio/checkbox/label) đã hiển thị"""
+    opts = question_element.find_elements(By.CSS_SELECTOR, "div[role='radio']")
+    if not opts:
+        opts = question_element.find_elements(By.CSS_SELECTOR, "div[role='checkbox']")
+    if not opts:
+        opts = question_element.find_elements(By.TAG_NAME, "label")
+    visible = [o for o in opts if o.is_displayed()]
+    return visible
+
+def find_question_by_keywords(questions, keywords):
+    """Tìm question element bằng danh sách keyword (hoặc chuỗi) trong text"""
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    for q in questions:
+        text = (q.text or "").lower()
+        if all(any(k in text for k in keywords) if isinstance(keywords, list) else (keywords in text) for keywords in [keywords]):
+            # match any provided keyword
+            for k in keywords:
+                if k in text:
+                    return q
+    # fallback: try checking any of the keywords
+    for q in questions:
+        text = (q.text or "").lower()
+        for k in keywords:
+            if k in text:
+                return q
+    return None
+
+def debug_click(driver, el, qname="", qidx=None):
+    """Click with debug print"""
     try:
-        # Tìm các tùy chọn (Radio hoặc Checkbox)
-        opts = question_element.find_elements(By.CSS_SELECTOR, "div[role='radio']")
-        q_type = "RADIO"
-        
-        if not opts:
-            opts = question_element.find_elements(By.CSS_SELECTOR, "div[role='checkbox']")
-            q_type = "CHECKBOX"
-        
-        # Nếu không tìm thấy role chuẩn, thử tìm label (cho các dạng form cũ hoặc đặc biệt)
-        if not opts:
-            opts = question_element.find_elements(By.TAG_NAME, "label")
-            q_type = "LABEL"
+        opt_text = (el.text or "").strip().splitlines()[0]
+    except:
+        opt_text = "<no-text>"
+    if qidx is None:
+        print(f"   >> CHỌN: '{opt_text}'  | CÂU: {qname}")
+    else:
+        print(f"   >> Câu {qidx+1} CHỌN: '{opt_text}'  | CÂU: {qname}")
+    scroll_to_element(driver, el)
+    force_click(driver, el)
 
-        if not opts:
-            print(f"   [!] Câu {q_index+1}: Không tìm thấy đáp án để chọn (Có thể là câu Text input).")
-            return
+# ---------------- PAGE 2 LOGIC --------------------------------
+def process_page_2(driver):
+    """
+    Thực hiện logic cho Trang 2 theo yêu cầu người dùng:
+    - Câu 1: Giới tính -> chỉ chọn Nam(0) hoặc Nữ(1)
+    - Câu 2: Độ tuổi -> prefer 0 hoặc 1
+    - Câu 3: Phường -> random
+    - Câu 4: Nghề nghiệp -> phụ thuộc độ tuổi (+ giới tính ảnh hưởng Nội trợ)
+    - Câu 5: Thu nhập -> phụ thuộc độ tuổi & nghề
+    """
+    print("\n[Trang 2] Áp dụng logic chi tiết...")
+    questions = get_visible_questions(driver)
+    print(f"   Tìm thấy listitem hiển thị: {len(questions)}")
+    # map detection keywords
+    q_gender = find_question_by_keywords(questions, ["giới tính", "giới tính", "giới"])
+    q_age = find_question_by_keywords(questions, ["độ tuổi", "tuổi", "độ tuổi", "tuoi"])
+    q_city = find_question_by_keywords(questions, ["phường", "đà nẵng", "đà nẵng", "đànẵng", "phuong"])
+    q_job = find_question_by_keywords(questions, ["nghề", "nghề nghiệp", "nghe", "nghề nghiệp"])
+    q_income = find_question_by_keywords(questions, ["thu nhập", "thu nhập", "thu nhập hiện", "mức thu nhập"])
 
-        # Lọc các option bị ẩn (nếu có)
-        valid_opts = [o for o in opts if o.is_displayed()]
-        if not valid_opts:
-            return
+    # fallback by position if detection failed
+    # many forms place the 5 questions sequentially; try to map by index order
+    visible_opts_map = {}
+    for idx, q in enumerate(questions):
+        visible_opts_map[idx] = get_option_elements(q)
 
-        # LOGIC CHỌN
-        if q_type == "CHECKBOX":
-            # Checkbox: Chọn ngẫu nhiên từ 1 đến 3 ô
-            num_to_pick = random.randint(1, min(3, len(valid_opts)))
-            picks = random.sample(valid_opts, num_to_pick)
-            for p in picks:
-                scroll_to_element(driver, p)
-                force_click(driver, p)
+    # Determine Q1 element
+    if not q_gender:
+        # assume first interactive question
+        for q in questions:
+            if get_option_elements(q):
+                q_gender = q
+                break
+    if not q_age:
+        # after gender likely next interactive
+        found = False
+        started = False
+        for q in questions:
+            if q == q_gender:
+                started = True
+                continue
+            if started and get_option_elements(q):
+                q_age = q
+                found = True
+                break
+        if not found:
+            # fallback to second interactive overall
+            ints = [q for q in questions if get_option_elements(q)]
+            if len(ints) >= 2:
+                q_age = ints[1]
+
+    # Q3
+    if not q_city:
+        ints = [q for q in questions if get_option_elements(q)]
+        # try third interactive
+        if len(ints) >= 3:
+            q_city = ints[2]
+
+    # Q4
+    if not q_job:
+        ints = [q for q in questions if get_option_elements(q)]
+        if len(ints) >= 4:
+            q_job = ints[3]
+
+    # Q5
+    if not q_income:
+        ints = [q for q in questions if get_option_elements(q)]
+        if len(ints) >= 5:
+            q_income = ints[4]
+
+    # --- Q1: Gender ---
+    gender_idx = None
+    gender_text = ""
+    if q_gender:
+        opts = get_option_elements(q_gender)
+        if opts:
+            # choose 0 or 1 only
+            candidates = [i for i in [0,1] if i < len(opts)]
+            gender_idx = random.choice(candidates)
+            gender_text = (opts[gender_idx].text or "").strip()
+            debug_click(driver, opts[gender_idx], qname="Giới tính", qidx=0)
         else:
-            # Radio: Chọn 1
-            # Logic: Né option cuối cùng nếu nó là mục "Khác" (thường có input text đi kèm)
-            # Google Form mục "Khác" thường có class khác biệt hoặc input text bên trong
-            # Ở đây ta đơn giản chọn random, nếu trúng mục Khác thì chấp nhận (hoặc giới hạn index)
-            
-            # Ưu tiên chọn các mục đầu, giảm tỉ lệ chọn mục cuối (thường là mục Khác)
-            if len(valid_opts) > 2:
-                 pick = random.choice(valid_opts[:-1]) # Bỏ mục cuối
-            else:
-                 pick = random.choice(valid_opts)
-            
-            scroll_to_element(driver, pick)
-            force_click(driver, pick)
-            
-        # print(f"   -> Đã điền câu {q_index+1} ({q_type})")
+            print("   [!] Q1: Không tìm thấy option")
+    else:
+        print("   [!] Q1: Không tìm thấy block câu hỏi")
 
-    except Exception as e:
-        print(f"   [!] Lỗi điền câu {q_index+1}: {str(e)[:50]}")
+    time.sleep(0.15)
+
+    # --- Q2: Age ---
+    age_idx = None
+    age_text = ""
+    if q_age:
+        opts = get_option_elements(q_age)
+        if opts:
+            # weights: prefer index 0 and 1 (18-24 and 25-34)
+            population = list(range(len(opts)))
+            # default weights: favor first two, small chance for others
+            weights = []
+            for i in population:
+                if i == 0 or i == 1:
+                    weights.append(0.4)
+                else:
+                    weights.append(0.1)
+            # normalize not required for random.choices
+            try:
+                age_idx = random.choices(population, weights=weights, k=1)[0]
+            except:
+                age_idx = random.randrange(len(opts))
+            age_text = (opts[age_idx].text or "").strip()
+            debug_click(driver, opts[age_idx], qname="Độ tuổi", qidx=1)
+        else:
+            print("   [!] Q2: Không tìm thấy option")
+    else:
+        print("   [!] Q2: Không tìm thấy block câu hỏi")
+
+    time.sleep(0.15)
+
+    # --- Q3: City (random any) ---
+    city_idx = None
+    city_text = ""
+    if q_city:
+        opts = get_option_elements(q_city)
+        if opts:
+            city_idx = random.randrange(len(opts))
+            city_text = (opts[city_idx].text or "").strip()
+            debug_click(driver, opts[city_idx], qname="Phường/Địa phương", qidx=2)
+        else:
+            print("   [!] Q3: Không tìm thấy option")
+    else:
+        print("   [!] Q3: Không tìm thấy block câu hỏi")
+
+    time.sleep(0.15)
+
+    # --- Q4: Job, phụ thuộc age & gender ---
+    job_idx = None
+    job_text = ""
+    if q_job:
+        opts = get_option_elements(q_job)
+        if opts:
+            # build candidate indices based on age_idx and gender
+            candidates = list(range(len(opts)))  # default all
+            # mapping based on prompt (0-based indices)
+            # 0 Học sinh/Sinh viên
+            # 1 Cán bộ/Giáo viên/Nhân viên nhà nước
+            # 2 Nhân viên văn phòng
+            # 3 Nhân viên dịch vụ/bán hàng
+            # 4 Tài xế công nghệ/Giao hàng
+            # 5 Lao động phổ thông/Công nhân
+            # 6 Kinh doanh tự do
+            # 7 Chủ doanh nghiệp/Quản lý cấp cao-trung
+            # 8 Nội trợ/Không đi làm
+            if age_idx == 0:  # 18-24
+                allowed = [0, 3, 4, 6]
+            elif age_idx == 1:  # 25-34
+                allowed = [1, 2, 4, 5, 6, 7]
+                # if female, allow Nội trợ as well
+                if gender_idx == 1:  # female chosen index 1
+                    allowed.append(8)
+            else:  # 35-45 or >45
+                # exclude student(0) and service(3)
+                allowed = [i for i in range(len(opts)) if i not in (0, 3)]
+            # clamp allowed to available options
+            candidates = [i for i in allowed if i < len(opts)]
+            if not candidates:
+                candidates = list(range(len(opts)))
+            job_idx = random.choice(candidates)
+            job_text = (opts[job_idx].text or "").strip()
+            debug_click(driver, opts[job_idx], qname="Nghề nghiệp", qidx=3)
+        else:
+            print("   [!] Q4: Không tìm thấy option")
+    else:
+        print("   [!] Q4: Không tìm thấy block câu hỏi")
+
+    time.sleep(0.15)
+
+    # --- Q5: Income, phụ thuộc age & job ---
+    income_idx = None
+    income_text = ""
+    if q_income:
+        opts = get_option_elements(q_income)
+        if opts:
+            # indices for income based on prompt:
+            # 0 Dưới 5M
+            # 1 5-10M
+            # 2 11-20M
+            # 3 Trên 20M
+            candidates = list(range(len(opts)))
+            if age_idx == 0:  # 18-24
+                if job_idx in (0, 3, 4):  # student/service/driver
+                    candidates = [i for i in [0] if i < len(opts)]
+                elif job_idx == 6:  # kinh doanh tự do
+                    candidates = [i for i in [1, 2] if i < len(opts)]
+                else:
+                    # fallback small income
+                    candidates = [i for i in [0,1] if i < len(opts)]
+            elif age_idx == 1:  # 25-34
+                candidates = [i for i in [1,2,3] if i < len(opts)]
+            else:  # 35-45 and >45
+                candidates = [i for i in [1,2,3] if i < len(opts)]
+            if not candidates:
+                candidates = list(range(len(opts)))
+            income_idx = random.choice(candidates)
+            income_text = (opts[income_idx].text or "").strip()
+            debug_click(driver, opts[income_idx], qname="Thu nhập", qidx=4)
+        else:
+            print("   [!] Q5: Không tìm thấy option")
+    else:
+        print("   [!] Q5: Không tìm thấy block câu hỏi")
+
+    print(f"\n   => KẾT LUẬN TRANG 2: Giới tính='{gender_text}' (idx={gender_idx}), Tuổi='{age_text}' (idx={age_idx}), Phường='{city_text}', Nghề='{job_text}' (idx={job_idx}), Thu nhập='{income_text}' (idx={income_idx})")
+    time.sleep(0.5)
+    return {
+        "gender_idx": gender_idx,
+        "age_idx": age_idx,
+        "city_idx": city_idx,
+        "job_idx": job_idx,
+        "income_idx": income_idx
+    }
 
 def go_next_page(driver):
     """Tìm nút Next và bấm, sau đó CHỜ trang chuyển hẳn"""
@@ -143,17 +351,12 @@ def main():
 
         # ---------------- TRANG 1: Giới thiệu ----------------
         print("\n[Trang 1]")
-        # Trang này thường chỉ có nút Next, không có câu hỏi listitem
         go_next_page(driver)
 
         # ---------------- TRANG 2: 5 Câu hỏi thông tin ----------------
-        print("\n[Trang 2] Đang xử lý 5 câu hỏi...")
-        qs_p2 = get_visible_questions(driver)
-        print(f"   Tìm thấy {len(qs_p2)} câu hỏi.")
-        
-        for idx, q in enumerate(qs_p2):
-            fill_question(driver, q, idx)
-        
+        # Thay vì loop generic, gọi hàm process_page_2 với logic phụ thuộc
+        print("\n[Trang 2] Bắt đầu logic chi tiết...")
+        page2_result = process_page_2(driver)
         go_next_page(driver)
 
         # ---------------- TRANG 3: Các câu hỏi tiếp theo ----------------
@@ -162,8 +365,11 @@ def main():
         print(f"   Tìm thấy {len(qs_p3)} câu hỏi.")
         
         for idx, q in enumerate(qs_p3):
-            fill_question(driver, q, idx)
-            
+            # dùng generic fill cho các câu không quan trọng
+            opts = get_option_elements(q)
+            if opts:
+                choice = random.randrange(len(opts))
+                debug_click(driver, opts[choice], qname=f"Trang3_Câu{idx+1}", qidx=idx)
         go_next_page(driver)
 
         # ---------------- TRANG 4: Ma trận / Linear Scale ----------------
@@ -172,8 +378,11 @@ def main():
         print(f"   Tìm thấy {len(qs_p4)} câu hỏi.")
         
         for idx, q in enumerate(qs_p4):
-            fill_question(driver, q, idx)
-            
+            opts = get_option_elements(q)
+            if opts:
+                # prefer not to pick last if it's "other"
+                pick_idx = random.randrange(len(opts)-1) if len(opts) > 2 else random.randrange(len(opts))
+                debug_click(driver, opts[pick_idx], qname=f"Trang4_Câu{idx+1}", qidx=idx)
         go_next_page(driver)
 
         # ---------------- TRANG 5: NỘP ----------------
@@ -214,8 +423,6 @@ def main():
 
     except Exception as e:
         print(f"Lỗi Fatal: {e}")
-        # import traceback
-        # traceback.print_exc()
     finally:
         driver.quit()
 
