@@ -460,14 +460,11 @@ def _is_electric_text(txt):
 
 def process_page_3(driver, page2_result):
     """
-    Xử lý Trang 3 (các câu về phương tiện / xe điện) theo yêu cầu.
-    - Đã thêm debug để in option texts cho Q6/Q7
-    - Điều chỉnh trọng số Q9 theo yêu cầu (tăng chance cho 2 option học/giao hàng cao,
-      giảm nhẹ cho 'Tiết kiệm chi phí nhiên liệu')
+    Trang 3 logic theo yêu cầu (robust, không crash nếu thiếu option).
+    Chọn Q7 trước, sau đó Q6/Q8/Q10 dựa trên Q7 và age rules.
     """
     print("\n[Trang 3] Áp dụng logic chi tiết (Xe máy / Xe điện)...")
     age_idx = page2_result.get("age_idx") if page2_result else None
-    gender_idx = page2_result.get("gender_idx") if page2_result else None
 
     questions = get_visible_questions(driver)
     print(f"   Tìm thấy listitem hiển thị: {len(questions)}")
@@ -480,131 +477,161 @@ def process_page_3(driver, page2_result):
     q11 = find_question_by_keywords(questions, ["chỗ sạc", "sạc xe", "có chỗ sạc"])
 
     ints = [q for q in questions if get_option_elements(q)]
-    # fallback assignments by order if any not found
-    try:
-        if not q6 and len(ints) >= 1: q6 = ints[0]
-        if not q7 and len(ints) >= 2: q7 = ints[1]
-        if not q8 and len(ints) >= 3: q8 = ints[2]
-        if not q9 and len(ints) >= 4: q9 = ints[3]
-        if not q10 and len(ints) >= 5: q10 = ints[4]
-        if not q11 and len(ints) >= 6: q11 = ints[5]
-    except Exception:
-        pass
+    if not q6 and len(ints) >= 1: q6 = ints[0]
+    if not q7 and len(ints) >= 2: q7 = ints[1]
+    if not q8 and len(ints) >= 3: q8 = ints[2]
+    if not q9 and len(ints) >= 4: q9 = ints[3]
+    if not q10 and len(ints) >= 5: q10 = ints[4]
+    if not q11 and len(ints) >= 6: q11 = ints[5]
 
-    # Q6 - Loại phương tiện thường dùng
-    q6_idx = None
-    q6_text = ""
-    if q6:
-        opts6 = get_option_elements(q6)
-        print("   >> Q6 options count:", len(opts6), "texts:", [(o.text or "").strip().splitlines()[0] for o in opts6])
-        disallowed_keywords = []
-        if age_idx == 0:  # 18-24
-            disallowed_keywords = ["xe ô tô", "xe ô tô xăng", "xe đạp", "xe đạp điện", "đi bộ"]
-        else:
-            disallowed_keywords = ["đi bộ", "xe đạp điện", "xe đạp", "xe buýt", "phương tiện công cộng", "bus"]
-        candidates = []
-        for i, o in enumerate(opts6):
-            t = (o.text or "").lower()
-            if any(k in t for k in disallowed_keywords):
-                continue
-            if "đi bộ" in t:
-                continue
-            candidates.append(i)
-        if not candidates:
-            candidates = list(range(len(opts6)))
-        q6_idx = random.choice(candidates)
-        q6_text = (opts6[q6_idx].text or "").strip()
-        debug_click(driver, opts6[q6_idx], qname="Q6 Loại phương tiện", qidx=5, pause_after=0.6)
-    else:
-        print("   [!] Q6: không tìm thấy block câu hỏi (Loại phương tiện)")
+    def text_of(opts, i):
+        try:
+            return (opts[i].text or "").strip()
+        except:
+            return ""
 
-    time.sleep(0.4)
+    def find_idx(opts, keywords):
+        if not opts: return None
+        return _find_option_index_by_keywords(opts, keywords)
 
-    # Q7 - Đã từng sử dụng xe máy điện chưa?
+    # Q7: chọn trước (nếu có)
+    opts7 = get_option_elements(q7) if q7 else []
+    print("   >> Q7 options count:", len(opts7), "texts:", [(o.text or "").strip().splitlines()[0] for o in opts7] if opts7 else [])
     q7_idx = None
     q7_text = ""
-    if q7:
-        opts7 = get_option_elements(q7)
-        print("   >> Q7 options count:", len(opts7), "texts:", [(o.text or "").strip().splitlines()[0] for o in opts7])
-        if opts7:
-            q7_idx = random.randrange(len(opts7))
-            q7_text = (opts7[q7_idx].text or "").strip()
-            debug_click(driver, opts7[q7_idx], qname="Q7 Đã từng sử dụng xe máy điện", qidx=6, pause_after=0.6)
+    if opts7:
+        q7_idx = random.randrange(len(opts7))
+        q7_text = text_of(opts7, q7_idx)
+        debug_click(driver, opts7[q7_idx], qname="Q7 Đã từng sử dụng xe máy điện", qidx=6)
     else:
-        print("   [!] Q7: không tìm thấy block câu hỏi (Đã từng sử dụng?)")
+        print("   [!] Q7 không có option, bỏ qua Q7")
 
-    time.sleep(0.4)
+    time.sleep(0.06)
 
-    # Sync rules between Q6 and Q7
-    if q7 and q6 and q7_text and "có" in q7_text.lower() and "đang sử dụng" in q7_text.lower():
-        opts6 = get_option_elements(q6)
-        idx_elec = None
-        for i, o in enumerate(opts6):
-            if _is_electric_text(o.text):
-                idx_elec = i; break
-        if idx_elec is not None and q6_idx != idx_elec:
-            print("   >> Đồng bộ: Q7 'Có, đang sử dụng' -> ép Q6 chọn 'Xe máy điện'")
-            debug_click(driver, opts6[idx_elec], qname="Q6 Loại phương tiện (sync)", qidx=5, pause_after=0.6)
-            q6_idx = idx_elec
-            q6_text = (opts6[q6_idx].text or "").strip()
+    # Q6: Tuân theo age rules và liên kết với Q7
+    opts6 = get_option_elements(q6) if q6 else []
+    print("   >> Q6 options count:", len(opts6), "texts:", [(o.text or "").strip().splitlines()[0] for o in opts6] if opts6 else [])
+    q6_idx = None
+    q6_text = ""
+
+    def is_electric_label(s):
+        return _is_electric_text(s)
+
+    def excluded_by_age_label(s):
+        s = (s or "").lower()
+        if age_idx == 0:  # 18-24
+            # exclude xe ô tô xăng, xe đạp, đi bộ
+            return any(x in s for x in ["xe ô tô", "xe ô tô xăng", "xe đạp", "đi bộ"])
+        else:
+            # 25-34, 35-45, >45: exclude đi bộ, xe đạp điện, xe đạp, xe buýt/phương tiện công cộng
+            return any(x in s for x in ["đi bộ", "xe đạp điện", "xe đạp", "xe buýt", "phương tiện công cộng", "bus"])
+
+    if opts6:
+        if q7_text and "có" in q7_text.lower() and "đang" in q7_text.lower():
+            # force electric if present
+            idx_e = None
+            for i, o in enumerate(opts6):
+                if is_electric_label(o.text):
+                    idx_e = i
+                    break
+            if idx_e is not None:
+                q6_idx = idx_e
+            else:
+                # fallback to age-respecting choice
+                cand = [i for i,o in enumerate(opts6) if not excluded_by_age_label(o.text) and "đi bộ" not in (o.text or "").lower()]
+                q6_idx = random.choice(cand) if cand else random.randrange(len(opts6))
+        else:
+            # choose non-electric respecting age exclusions
+            candidates = []
+            for i, o in enumerate(opts6):
+                t = (o.text or "").lower()
+                if is_electric_label(t):
+                    continue
+                if excluded_by_age_label(t):
+                    continue
+                if "đi bộ" in t:
+                    continue
+                candidates.append(i)
+            if not candidates:
+                # fallback to any non-electric
+                candidates = [i for i,o in enumerate(opts6) if not is_electric_label((o.text or "").lower())]
+            if not candidates:
+                candidates = list(range(len(opts6)))
+            q6_idx = random.choice(candidates)
+        q6_text = text_of(opts6, q6_idx)
+        debug_click(driver, opts6[q6_idx], qname="Q6 Loại phương tiện", qidx=5)
     else:
-        if q7 and q6 and q7_text and ("chưa" in q7_text.lower() or "ngừng" in q7_text.lower() or "dừng" in q7_text.lower()):
-            opts6 = get_option_elements(q6)
-            if q6_idx is not None and _is_electric_text(opts6[q6_idx].text):
-                non_elec_candidates = [i for i, o in enumerate(opts6) if not _is_electric_text(o.text)]
-                if non_elec_candidates:
-                    new_idx = random.choice(non_elec_candidates)
-                    print("   >> Đồng bộ: Q7 cho biết không dùng -> chuyển Q6 sang option non-electric")
-                    debug_click(driver, opts6[new_idx], qname="Q6 Loại phương tiện (sync non-elec)", qidx=5, pause_after=0.6)
-                    q6_idx = new_idx
-                    q6_text = (opts6[q6_idx].text or "").strip()
+        print("   [!] Q6 không có option")
 
-    time.sleep(0.4)
+    time.sleep(0.06)
 
-    # Q8 - Thời gian đã sử dụng xe máy điện
+    # Nếu Q6 là electric nhưng Q7 chọn non-active -> try set Q7 active (nếu tồn tại)
+    if opts7 and q6_text and is_electric_label(q6_text):
+        idx_active = find_idx(opts7, ["có, đang sử dụng", "có đang sử dụng", "có, đang", "đang sử dụng"])
+        if idx_active is not None:
+            # click only if different
+            if q7_idx != idx_active:
+                q7_idx = idx_active
+                q7_text = text_of(opts7, q7_idx)
+                debug_click(driver, opts7[q7_idx], qname="Q7 (sync vì Q6 là điện)", qidx=6)
+
+    time.sleep(0.06)
+
+    # Q8: theo Q7
+    opts8 = get_option_elements(q8) if q8 else []
+    print("   >> Q8 options count:", len(opts8), "texts:", [(o.text or "").strip().splitlines()[0] for o in opts8] if opts8 else [])
     q8_idx = None
     q8_text = ""
-    if q8:
-        opts8 = get_option_elements(q8)
-        if opts8:
-            if q7_text and "chưa" in q7_text.lower():
-                idx = _find_option_index_by_keywords(opts8, ["dưới 6", "dưới 6 tháng", "duoi 6"])
-                if idx is None:
-                    idx = 0
-                q8_idx = idx
-            else:
-                non_under6 = [i for i, o in enumerate(opts8) if "dưới 6" not in (o.text or "").lower() and "duoi 6" not in (o.text or "").lower()]
-                if non_under6:
-                    q8_idx = random.choice(non_under6)
-                else:
-                    q8_idx = random.randrange(len(opts8))
-            q8_text = (opts8[q8_idx].text or "").strip()
-            debug_click(driver, opts8[q8_idx], qname="Q8 Thời gian sử dụng xe máy điện", qidx=7, pause_after=0.6)
+    if opts8:
+        if q7_text and "chưa" in q7_text.lower():
+            # default 'Dưới 6 tháng'
+            idx = find_idx(opts8, ["dưới 6", "duoi 6", "dưới 6 tháng"])
+            q8_idx = idx if idx is not None else 0
+        elif q7_text and "có" in q7_text.lower() and "đang" in q7_text.lower():
+            # choose among "1 năm - 3 năm" or "Trên 3 năm"
+            choices = []
+            for k in ["1 năm - 3", "1 năm - 3 năm", "trên 3", "trên 3 năm"]:
+                idx = find_idx(opts8, [k])
+                if idx is not None:
+                    choices.append(idx)
+            choices = list(dict.fromkeys(choices))
+            q8_idx = random.choice(choices) if choices else random.randrange(len(opts8))
+        elif q7_text and ("ngừng" in q7_text.lower() or "đã ngừng" in q7_text.lower() or "ngung" in q7_text.lower()):
+            # random among first three: dưới 6, 6 tháng - 1 năm, 1 năm - 3 năm
+            candidates = []
+            for k in ["dưới 6", "duoi 6", "6 tháng", "6 thang", "1 năm - 3", "1 năm - 3 năm"]:
+                idx = find_idx(opts8, [k])
+                if idx is not None:
+                    candidates.append(idx)
+            candidates = list(dict.fromkeys(candidates))
+            q8_idx = random.choice(candidates) if candidates else random.randrange(len(opts8))
+        else:
+            q8_idx = random.randrange(len(opts8))
+        q8_text = text_of(opts8, q8_idx)
+        debug_click(driver, opts8[q8_idx], qname="Q8 Thời gian sử dụng xe máy điện", qidx=7)
     else:
-        print("   [!] Q8: không tìm thấy block câu hỏi (Thời gian sử dụng)")
+        print("   [!] Q8 không có option")
 
-    time.sleep(0.4)
+    time.sleep(0.06)
 
-    # Q9 - Mục đích chính (loại trừ 'Tận dụng các ưu đãi về chính sách của chính phủ')
+    # Q9: exclude 'tận dụng...' and weight for age 18-24
+    opts9 = get_option_elements(q9) if q9 else []
+    print("   >> Q9 options count:", len(opts9), "texts:", [(o.text or "").strip().splitlines()[0] for o in opts9] if opts9 else [])
     q9_idx = None
     q9_text = ""
-    if q9:
-        opts9 = get_option_elements(q9)
-        print("   >> Q9 options count:", len(opts9), "texts:", [(o.text or "").strip().splitlines()[0] for o in opts9])
-        allowed9 = []
-        for i, o in enumerate(opts9):
+    if opts9:
+        allowed = []
+        for i,o in enumerate(opts9):
             t = (o.text or "").lower()
-            if "tận dụng" in t or "ưu đãi" in t or "chính sách" in t:
+            if any(x in t for x in ["tận dụng", "ưu đãi", "chính sách", "uu dai", "uutai"]):
                 continue
-            allowed9.append(i)
-        if not allowed9:
-            allowed9 = list(range(len(opts9)))
+            allowed.append(i)
+        if not allowed:
+            allowed = list(range(len(opts9)))
 
-        # weights per requirement:
-        # age 18-24: boost "Đi học/Đi làm hàng ngày" and "Giao hàng..." high, "Tiết kiệm" slight boost only
         if age_idx == 0:
-            weights_map = []
-            for i in allowed9:
+            weights = []
+            for i in allowed:
                 t = (opts9[i].text or "").lower()
                 if any(x in t for x in ["đi học", "đi làm", "đi học/đi làm", "đi làm/đi học"]):
                     w = 6.0
@@ -614,91 +641,89 @@ def process_page_3(driver, page2_result):
                     w = 2.0
                 else:
                     w = 1.0
-                weights_map.append(w)
+                weights.append(w)
             try:
-                q9_idx = random.choices(allowed9, weights=weights_map, k=1)[0]
+                q9_idx = random.choices(allowed, weights=weights, k=1)[0]
             except:
-                q9_idx = random.choice(allowed9)
+                q9_idx = random.choice(allowed)
         else:
-            q9_idx = random.choice(allowed9)
-
-        q9_text = (opts9[q9_idx].text or "").strip()
-        debug_click(driver, opts9[q9_idx], qname="Q9 Mục đích chính", qidx=8, pause_after=0.6)
+            q9_idx = random.choice(allowed)
+        q9_text = text_of(opts9, q9_idx)
+        debug_click(driver, opts9[q9_idx], qname="Q9 Mục đích chính", qidx=8)
     else:
-        print("   [!] Q9: không tìm thấy block câu hỏi (Mục đích)")
+        print("   [!] Q9 không có option")
 
-    time.sleep(0.4)
+    time.sleep(0.06)
 
-    # Q10 - Tần suất sử dụng - liên hệ với Q7
+    # Q10: tần suất, liên hệ Q7
+    opts10 = get_option_elements(q10) if q10 else []
+    print("   >> Q10 options count:", len(opts10), "texts:", [(o.text or "").strip().splitlines()[0] for o in opts10] if opts10 else [])
     q10_idx = None
     q10_text = ""
-    if q10:
-        opts10 = get_option_elements(q10)
-        if q7_text and "có" in q7_text.lower() and "đang sử dụng" in q7_text.lower():
+    if opts10:
+        if q7_text and "có" in q7_text.lower() and "đang" in q7_text.lower():
             candidates = []
-            for keyword in ["mỗi ngày", "3-5", "3 - 5", "3–5", "3 đến 5"]:
-                idx = _find_option_index_by_keywords(opts10, [keyword])
-                if idx is not None and idx < len(opts10):
+            for k in ["mỗi ngày", "moi ngay", "3-5", "3 - 5", "3–5", "3 đến 5", "3 đến 5 lần"]:
+                idx = find_idx(opts10, [k])
+                if idx is not None:
                     candidates.append(idx)
             candidates = list(dict.fromkeys(candidates))
             if not candidates:
                 candidates = list(range(min(2, len(opts10))))
             q10_idx = random.choice(candidates)
         else:
-            labels = [(i, (o.text or "").lower()) for i,o in enumerate(opts10)]
-            idx_notuse = idx_month = idx_rare = None
-            for i, t in labels:
-                if "tôi không còn sử dụng" in t or "không còn sử dụng" in t:
-                    idx_notuse = i
-                if "1-3 lần" in t or "1 - 3" in t or "1–3" in t:
-                    idx_month = i
-                if "hiếm" in t or "dưới 1 lần" in t or "hiem" in t:
-                    idx_rare = i
+            idx_month = find_idx(opts10, ["1-3 lần", "1 - 3", "1–3"])
+            idx_rare = find_idx(opts10, ["hiếm", "dưới 1 lần", "duoi 1"])
+            idx_notuse = find_idx(opts10, ["tôi không còn sử dụng", "không còn sử dụng", "tôi không còn", "khong con su dung"])
             candidates = []; weights = []
-            if idx_notuse is not None:
-                candidates.append(idx_notuse); weights.append(80)
             if idx_month is not None:
                 candidates.append(idx_month); weights.append(10)
             if idx_rare is not None:
                 candidates.append(idx_rare); weights.append(10)
-            if not candidates:
+            if idx_notuse is not None:
+                candidates.append(idx_notuse); weights.append(80)
+            # dedupe
+            final = []
+            final_w = []
+            seen = set()
+            for c,w in zip(candidates, weights):
+                if c not in seen:
+                    final.append(c); final_w.append(w); seen.add(c)
+            if not final:
                 q10_idx = random.randrange(len(opts10))
             else:
                 try:
-                    q10_idx = random.choices(candidates, weights=weights, k=1)[0]
+                    q10_idx = random.choices(final, weights=final_w, k=1)[0]
                 except:
-                    q10_idx = random.choice(candidates)
-        q10_text = (opts10[q10_idx].text or "").strip()
-        debug_click(driver, opts10[q10_idx], qname="Q10 Tần suất sử dụng", qidx=9, pause_after=0.6)
+                    q10_idx = random.choice(final)
+        q10_text = text_of(opts10, q10_idx)
+        debug_click(driver, opts10[q10_idx], qname="Q10 Tần suất sử dụng", qidx=9)
     else:
-        print("   [!] Q10: không tìm thấy block câu hỏi (Tần suất)")
+        print("   [!] Q10 không có option")
 
-    time.sleep(0.4)
+    time.sleep(0.06)
 
-    # Q11
+    # Q11 random
+    opts11 = get_option_elements(q11) if q11 else []
     q11_idx = None
     q11_text = ""
-    if q11:
-        opts11 = get_option_elements(q11)
-        if opts11:
-            q11_idx = random.randrange(len(opts11))
-            q11_text = (opts11[q11_idx].text or "").strip()
-            debug_click(driver, opts11[q11_idx], qname="Q11 Có chỗ sạc không", qidx=10, pause_after=0.6)
+    if opts11:
+        q11_idx = random.randrange(len(opts11))
+        q11_text = text_of(opts11, q11_idx)
+        debug_click(driver, opts11[q11_idx], qname="Q11 Có chỗ sạc không", qidx=10)
     else:
-        print("   [!] Q11: không tìm thấy block câu hỏi (Chỗ sạc)")
+        print("   [!] Q11 không có option")
 
     print(f"\n   => KẾT LUẬN TRANG 3: Q6='{q6_text}' (idx={q6_idx}), Q7='{q7_text}' (idx={q7_idx}), Q8='{q8_text}', Q9='{q9_text}', Q10='{q10_text}', Q11='{q11_text}')")
-    time.sleep(0.4)
+    time.sleep(0.06)
 
     return {
-        "q6_idx": q6_idx,
-        "q6_text": q6_text,
-        "q7_idx": q7_idx,
-        "q7_text": q7_text,
-        "q8_idx": q8_idx,
-        "q9_idx": q9_idx,
-        "q10_idx": q10_idx,
-        "q11_idx": q11_idx
+        "q6_idx": q6_idx, "q6_text": q6_text,
+        "q7_idx": q7_idx, "q7_text": q7_text,
+        "q8_idx": q8_idx, "q8_text": q8_text,
+        "q9_idx": q9_idx, "q9_text": q9_text,
+        "q10_idx": q10_idx, "q10_text": q10_text,
+        "q11_idx": q11_idx, "q11_text": q11_text
     }
 
 if __name__ == "__main__":
