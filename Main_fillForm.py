@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # ===========================
 
 # Chọn mode: "fast" hoặc "slow"
-MODE = "slow"  # Thay đổi thành "slow" để chạy chậm
+MODE = "fast"  # Thay đổi thành "slow" để chạy chậm
 
 # Số phút muốn chạy chương trình (ví dụ: 2, 5, 10...)
 DURATION_MINUTES = 10
